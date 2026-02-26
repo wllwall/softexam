@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { ExamQuestion } from '@/types'
-import { questionsData } from '@/data/questions'
+import { getAllQuestions, getWrongQuestionIds } from '@/data/questions'
 import { StorageKey } from '@/types'
 import { getStorage, setStorage } from '@/utils/storage'
 
@@ -43,11 +43,7 @@ const isCorrect = computed(() => {
 })
 
 function syncWrongState() {
-  const wrongIds = getStorage<number[]>(StorageKey.WRONG_QUESTIONS, [])
-  questions.value = questionsData.map(q => ({
-    ...q,
-    isWrong: wrongIds.includes(q.id),
-  }))
+  questions.value = getAllQuestions()
 }
 
 function persistLastIndex() {
@@ -103,7 +99,7 @@ function submit() {
   if (!q)
     return
 
-  const wrongIds = getStorage<number[]>(StorageKey.WRONG_QUESTIONS, [])
+  const wrongIds = getWrongQuestionIds()
   const correct = selectedAnswer.value === q.answer
   if (!correct) {
     const newIds = Array.from(new Set([...wrongIds, q.id]))
@@ -204,8 +200,17 @@ onMounted(async () => {
         </view>
 
         <view class="mt-3 border-1 border-[var(--app-border)] rounded-[20rpx] bg-white p-[24rpx] shadow-[var(--app-shadow-sm)]">
-          <view class="text-[30rpx] text-[var(--app-text)] font-700 leading-[46rpx]">
+          <view class="whitespace-pre-wrap text-[30rpx] text-[var(--app-text)] font-700 leading-[46rpx]">
             {{ currentQuestion?.title }}
+          </view>
+          <view v-if="currentQuestion?.attachments?.length" class="mt-3 flex flex-col gap-2">
+            <image
+              v-for="(att, idx) in currentQuestion.attachments"
+              :key="`${att.url}-${idx}`"
+              mode="widthFix"
+              class="w-full rounded-[12rpx]"
+              :src="att.url"
+            />
           </view>
         </view>
 

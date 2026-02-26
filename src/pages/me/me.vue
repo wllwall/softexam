@@ -1,7 +1,7 @@
 <script lang="ts" setup>
-import type { Card, ExamQuestion } from '@/types'
+import type { Card, ExamQuestion, ExamQuestionPack } from '@/types'
 import { cardsData } from '@/data/cards'
-import { questionsData } from '@/data/questions'
+import { addOrReplaceCustomQuestionPack, getAllQuestions, getCustomQuestionPacks, getWrongQuestionIds, normalizeQuestionPackData, setCustomQuestionPacks } from '@/data/questions'
 import { StorageKey } from '@/types'
 import { getStorage, removeStorage, setStorage } from '@/utils/storage'
 
@@ -18,11 +18,15 @@ const activeTab = ref<MeTab>(
 
 const collectedCards = ref<Card[]>([])
 const wrongQuestions = ref<ExamQuestion[]>([])
+const customQuestionPacks = ref<ExamQuestionPack[]>([])
+const importPackText = ref('')
+const importPackUrl = ref('')
+const customQuestionCount = computed(() => customQuestionPacks.value.reduce((sum, p) => sum + p.questions.length, 0))
 
 const selectedCollectedIndex = ref<number | null>(null)
 const collectedIsFlipped = ref(false)
 
-const selectedWrongId = ref<number | null>(null)
+const selectedWrongId = ref<string | null>(null)
 const wrongSelectedAnswer = ref<string>('')
 const wrongSubmitted = ref(false)
 
@@ -57,10 +61,7 @@ function refreshCollected() {
 }
 
 function refreshWrong() {
-  const ids = getStorage<number[]>(StorageKey.WRONG_QUESTIONS, [])
-  wrongQuestions.value = questionsData
-    .filter(q => ids.includes(q.id))
-    .map(q => ({ ...q, isWrong: true }))
+  wrongQuestions.value = getAllQuestions().filter(q => q.isWrong)
 }
 
 function uncollectCard(id: number) {
@@ -109,7 +110,7 @@ function collectedNext() {
   collectedIsFlipped.value = false
 }
 
-function openWrongDetail(id: number) {
+function openWrongDetail(id: string) {
   selectedWrongId.value = id
   wrongSelectedAnswer.value = ''
   wrongSubmitted.value = false
@@ -136,8 +137,8 @@ function submitWrong() {
   uni.showToast({ title: correct ? '回答正确' : '回答错误', icon: 'none' })
 }
 
-function removeWrong(id: number) {
-  const ids = getStorage<number[]>(StorageKey.WRONG_QUESTIONS, [])
+function removeWrong(id: string) {
+  const ids = getWrongQuestionIds()
   setStorage(
     StorageKey.WRONG_QUESTIONS,
     ids.filter(x => x !== id),
@@ -147,6 +148,98 @@ function removeWrong(id: number) {
   }
   refreshWrong()
   uni.showToast({ title: '已移除', icon: 'none' })
+}
+
+function refreshCustomPacks() {
+  customQuestionPacks.value = getCustomQuestionPacks()
+}
+
+function importQuestionPackFromText() {
+  const text = importPackText.value.trim()
+  if (!text) {
+    uni.showToast({ title: '请输入题库 JSON', icon: 'none' })
+    return
+  }
+  let data: unknown
+  try {
+    data = JSON.parse(text)
+  }
+  catch {
+    uni.showToast({ title: 'JSON 格式不正确', icon: 'none' })
+    return
+  }
+  const pack = normalizeQuestionPackData(data)
+  if (!pack) {
+    uni.showToast({ title: '题库结构不正确', icon: 'none' })
+    return
+  }
+  addOrReplaceCustomQuestionPack(pack)
+  importPackText.value = ''
+  refreshCustomPacks()
+  refreshWrong()
+  uni.showToast({ title: `已导入：${pack.title}（${pack.questions.length}题）`, icon: 'none' })
+}
+
+async function importQuestionPackFromUrl() {
+  const url = importPackUrl.value.trim()
+  if (!url) {
+    uni.showToast({ title: '请输入题库 URL', icon: 'none' })
+    return
+  }
+  try {
+    const res = await new Promise<UniApp.RequestSuccessCallbackResult>((resolve, reject) => {
+      uni.request({
+        url,
+        method: 'GET',
+        success: resolve,
+        fail: reject,
+      })
+    })
+    const data = typeof res.data === 'string' ? JSON.parse(res.data) : res.data
+    const pack = normalizeQuestionPackData(data)
+    if (!pack) {
+      uni.showToast({ title: '题库结构不正确', icon: 'none' })
+      return
+    }
+    addOrReplaceCustomQuestionPack(pack)
+    refreshCustomPacks()
+    refreshWrong()
+    uni.showToast({ title: `已更新：${pack.title}（${pack.questions.length}题）`, icon: 'none' })
+  }
+  catch {
+    uni.showToast({ title: '拉取失败', icon: 'none' })
+  }
+}
+
+function exportCustomPacks() {
+  const text = JSON.stringify(customQuestionPacks.value, null, 2)
+  uni.setClipboardData({
+    data: text,
+    success() {
+      uni.showToast({ title: '已复制到剪贴板', icon: 'none' })
+    },
+  })
+}
+
+function clearCustomPacks() {
+  if (!customQuestionPacks.value.length) {
+    uni.showToast({ title: '暂无自定义题库', icon: 'none' })
+    return
+  }
+  uni.showModal({
+    title: '确认清空',
+    content: '将清空自定义导入的题库，是否继续？',
+    confirmText: '清空',
+    cancelText: '取消',
+    success(res) {
+      if (!res.confirm)
+        return
+      setCustomQuestionPacks([])
+      refreshCustomPacks()
+      refreshWrong()
+      uni.showToast({ title: '已清空', icon: 'none' })
+    },
+  })
 }
 
 function resetAll() {
@@ -174,6 +267,7 @@ function resetAll() {
 onShow(() => {
   refreshCollected()
   refreshWrong()
+  refreshCustomPacks()
   activeTab.value = getStorage(StorageKey.ME_ACTIVE_TAB, activeTab.value)
 })
 </script>
@@ -475,6 +569,65 @@ onShow(() => {
       </view>
 
       <view v-else class="mt-4">
+        <view
+          class="border-1 border-[var(--app-border)] rounded-[20rpx] bg-white p-[24rpx] shadow-[var(--app-shadow-sm)]"
+        >
+          <view class="flex items-center justify-between gap-3">
+            <view>
+              <view class="text-[30rpx] text-[var(--app-text)] font-700 leading-[46rpx]">
+                题库扩充
+              </view>
+              <view class="mt-1 text-[24rpx] text-[var(--app-muted)] leading-[36rpx]">
+                已导入 {{ customQuestionPacks.length }} 个题库，共 {{ customQuestionCount }} 题
+              </view>
+            </view>
+            <view
+              class="border-1 border-[var(--app-border)] rounded-[10rpx] bg-[#f7f8fa] px-[16rpx] py-[10rpx] text-[24rpx] text-[var(--app-text)]"
+              @click="exportCustomPacks"
+            >
+              导出
+            </view>
+          </view>
+
+          <view class="mt-4 border-1 border-[var(--app-border)] rounded-[14rpx] bg-[#f7f8fa] p-[18rpx]">
+            <textarea
+              v-model="importPackText"
+              class="w-full text-[26rpx] text-[var(--app-text)] leading-[40rpx]"
+              :maxlength="-1"
+              placeholder="粘贴题库 JSON（packId/title/version/questions）"
+              auto-height
+            />
+          </view>
+          <view
+            class="mt-3 rounded-[10rpx] bg-[#4096ff] py-[22rpx] text-center text-[28rpx] text-white transition-all duration-300 active:scale-[0.98] active:brightness-95"
+            @click="importQuestionPackFromText"
+          >
+            导入题库
+          </view>
+
+          <view class="mt-4 border-1 border-[var(--app-border)] rounded-[14rpx] bg-[#f7f8fa] px-[18rpx] py-[16rpx]">
+            <input
+              v-model="importPackUrl"
+              class="text-[26rpx] text-[var(--app-text)]"
+              placeholder="题库 URL（返回 JSON）"
+            >
+          </view>
+          <view class="mt-3 flex gap-3">
+            <view
+              class="flex-1 rounded-[10rpx] bg-[#4096ff] py-[22rpx] text-center text-[28rpx] text-white transition-all duration-300 active:scale-[0.98] active:brightness-95"
+              @click="importQuestionPackFromUrl"
+            >
+              从 URL 更新
+            </view>
+            <view
+              class="flex-1 border-1 border-[var(--app-border)] rounded-[10rpx] bg-white py-[22rpx] text-center text-[28rpx] text-[var(--app-text)] transition-all duration-300 active:scale-[0.98] active:brightness-95"
+              @click="clearCustomPacks"
+            >
+              清空自定义题库
+            </view>
+          </view>
+        </view>
+
         <view
           class="border-1 border-[var(--app-border)] rounded-[20rpx] bg-white p-[24rpx] shadow-[var(--app-shadow-sm)]"
         >
